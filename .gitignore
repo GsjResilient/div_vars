@@ -1,0 +1,17 @@
+# Build outputs
+**/build/
+**/CMakeFiles/
+
+# Generated partition and visualization artifacts
+/aig_partition_out_metis/
+/aig_visualization_out/
+/test.html
+/test2.html
+
+# Local installation output
+/.local/
+
+# Platform and editor files
+.DS_Store
+*.swp
+*~
