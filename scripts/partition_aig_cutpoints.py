@@ -314,6 +314,112 @@ def compute_visualization_layout(aig: dict, original_edges: list[dict]) -> tuple
     return coordinates, levels
 
 
+def compute_partition_visualization_layout(nodes: list[dict]) -> dict | None:
+    partition_ids = sorted(
+        {
+            int(node["partition"])
+            for node in nodes
+            if node.get("partition") is not None
+        }
+    )
+    if partition_ids != [0, 1]:
+        return None
+
+    grouped = {
+        partition: [node for node in nodes if node.get("partition") == partition]
+        for partition in partition_ids
+    }
+    neutral = [node for node in nodes if node.get("partition") is None]
+
+    def source_bounds(group: list[dict]) -> tuple[float, float, float, float]:
+        return (
+            min(node["x"] for node in group),
+            max(node["x"] for node in group),
+            min(node["y"] for node in group),
+            max(node["y"] for node in group),
+        )
+
+    grouped_bounds = {partition: source_bounds(grouped[partition]) for partition in partition_ids}
+    content_width = max(max_x - min_x for min_x, max_x, _min_y, _max_y in grouped_bounds.values())
+    content_height = max(max_y - min_y for _min_x, _max_x, min_y, max_y in grouped_bounds.values())
+    horizontal_padding = 90.0
+    header_padding = 360.0
+    bottom_padding = 90.0
+    margin = 90.0
+    group_gap = 240.0
+    region_width = max(900.0, content_width + 2 * horizontal_padding)
+    region_height = max(990.0, content_height + header_padding + bottom_padding)
+    group_top = margin
+
+    groups = []
+    for index, partition in enumerate(partition_ids):
+        left = margin + index * (region_width + group_gap)
+        min_x, max_x, min_y, max_y = grouped_bounds[partition]
+        x_offset = left + horizontal_padding - min_x + (content_width - (max_x - min_x)) / 2
+        y_offset = group_top + header_padding - min_y + (content_height - (max_y - min_y)) / 2
+        for node in grouped[partition]:
+            node["partitionX"] = round(node["x"] + x_offset, 3)
+            node["partitionY"] = round(node["y"] + y_offset, 3)
+        groups.append(
+            {
+                "partition": partition,
+                "label": f"P{partition}",
+                "nodeCount": len(grouped[partition]),
+                "minX": round(left, 3),
+                "maxX": round(left + region_width, 3),
+                "minY": round(group_top, 3),
+                "maxY": round(group_top + region_height, 3),
+            }
+        )
+
+    neutral_region = None
+    if neutral:
+        neutral_top = group_top + region_height + 150.0
+        neutral_horizontal_padding = 70.0
+        neutral_header_padding = 300.0
+        neutral_bottom_padding = 70.0
+        neutral_min_x, neutral_max_x, neutral_min_y, neutral_max_y = source_bounds(neutral)
+        neutral_source_width = max(neutral_max_x - neutral_min_x, 1.0)
+        neutral_source_height = max(neutral_max_y - neutral_min_y, 1.0)
+        total_width = region_width * 2 + group_gap
+        neutral_width = min(total_width, max(700.0, neutral_source_width + 2 * neutral_horizontal_padding))
+        neutral_left = margin + (total_width - neutral_width) / 2
+        neutral_height = max(
+            440.0,
+            neutral_source_height + neutral_header_padding + neutral_bottom_padding,
+        )
+        for node in neutral:
+            x_ratio = (node["x"] - neutral_min_x) / neutral_source_width
+            y_ratio = (node["y"] - neutral_min_y) / neutral_source_height
+            node["partitionX"] = round(
+                neutral_left
+                + neutral_horizontal_padding
+                + x_ratio * (neutral_width - 2 * neutral_horizontal_padding),
+                3,
+            )
+            node["partitionY"] = round(
+                neutral_top
+                + neutral_header_padding
+                + y_ratio * (neutral_height - neutral_header_padding - neutral_bottom_padding),
+                3,
+            )
+        neutral_region = {
+            "label": "未参与划分 / 输出",
+            "nodeCount": len(neutral),
+            "minX": round(neutral_left, 3),
+            "maxX": round(neutral_left + neutral_width, 3),
+            "minY": round(neutral_top, 3),
+            "maxY": round(neutral_top + neutral_height, 3),
+        }
+
+    return {
+        "enabled": True,
+        "partitionIds": partition_ids,
+        "groups": groups,
+        "neutralGroup": neutral_region,
+    }
+
+
 def build_visualization_data(
     aig: dict,
     part: list[int],
@@ -438,8 +544,9 @@ def build_visualization_data(
             }
         )
 
+    partition_layout = compute_partition_visualization_layout(nodes)
     return {
-        "version": 1,
+        "version": 2,
         "mode": "partition",
         "title": Path(aig["path"]).stem,
         "aigFile": aig["path"],
@@ -450,6 +557,7 @@ def build_visualization_data(
         "keyVariables": report["cut_variables"],
         "cutVariables": report["cut_variables"],
         "partitionSizes": report["partition_sizes"],
+        "partitionLayout": partition_layout,
         "excludedOutputVariables": report["excluded_output_variables"],
         "metrics": {
             "aigVariableCount": aig["maxvar"],

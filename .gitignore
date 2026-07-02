@@ -11,6 +11,10 @@
 # Local installation output
 /.local/
 
+# Python caches
+__pycache__/
+*.py[cod]
+
 # Platform and editor files
 .DS_Store
 *.swp

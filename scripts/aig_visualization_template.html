@@ -22,6 +22,7 @@
     }
 
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
 
     html, body {
       width: 100%;
@@ -167,6 +168,30 @@
     }
 
     .check-control input { accent-color: #176b7d; }
+
+    .partition-visibility {
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .partition-visibility .check-control {
+      height: 32px;
+      padding: 0 9px;
+    }
+
+    .partition-visibility .check-control + .check-control { border-left: 1px solid var(--line); }
+
+    .partition-dot {
+      width: 9px;
+      height: 9px;
+      display: inline-block;
+      border: 1px solid rgba(23, 33, 43, 0.25);
+      border-radius: 2px;
+    }
 
     .workspace {
       min-height: 0;
@@ -453,6 +478,11 @@
         <button class="icon-button" id="fit-view" type="button" aria-label="适应窗口" title="适应窗口">□</button>
         <button class="icon-button" id="reset-view" type="button" aria-label="重置视图" title="重置视图">↺</button>
       </div>
+      <div class="segmented" id="layout-control" aria-label="布局视图" hidden>
+        <button type="button" data-layout="topology" class="active">拓扑</button>
+        <button type="button" data-layout="partition">分区</button>
+      </div>
+      <div class="partition-visibility" id="partition-visibility" aria-label="分区显隐" hidden></div>
       <div class="segmented" id="focus-control" aria-label="邻域聚焦">
         <button type="button" data-depth="0" class="active">全图</button>
         <button type="button" data-depth="1">1-hop</button>
@@ -498,6 +528,7 @@
 
       const DATA = JSON.parse(document.getElementById("aig-data").textContent);
       const isPartitionMode = DATA.mode !== "key-file";
+      const hasPartitionLayout = isPartitionMode && DATA.partitionLayout && DATA.partitionLayout.enabled;
       const keyVariables = DATA.keyVariables || DATA.cutVariables || [];
       const canvas = document.getElementById("graph-canvas");
       const shell = canvas.parentElement;
@@ -537,18 +568,17 @@
       let focusSet = null;
       let gesture = null;
       let hasFitted = false;
+      let layoutMode = "topology";
+      const visiblePartitions = new Set(
+        hasPartitionLayout ? DATA.partitionLayout.partitionIds.map(Number) : []
+      );
       const view = { x: 0, y: 0, scale: 1 };
 
       document.body.dataset.mode = isPartitionMode ? "partition" : "key-file";
       document.querySelector(".brand p").textContent = isPartitionMode ? "AIG Partition Map" : "AIG Key Variable Map";
       document.getElementById("emphasize-cuts").closest(".check-control").hidden = !isPartitionMode;
-
-      const bounds = DATA.nodes.reduce((result, node) => ({
-        minX: Math.min(result.minX, node.x),
-        maxX: Math.max(result.maxX, node.x),
-        minY: Math.min(result.minY, node.y),
-        maxY: Math.max(result.maxY, node.y),
-      }), { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
+      document.getElementById("layout-control").hidden = !hasPartitionLayout;
+      document.getElementById("partition-visibility").hidden = !hasPartitionLayout;
 
       const typeNames = {
         input: "输入 PI",
@@ -568,6 +598,78 @@
       function partitionColor(partition) {
         if (partition === null || partition === undefined) return "#87929d";
         return partitionPalette[Math.abs(Number(partition)) % partitionPalette.length];
+      }
+
+      function positionFor(node) {
+        if (layoutMode === "partition" && hasPartitionLayout) {
+          return { x: node.partitionX, y: node.partitionY };
+        }
+        return { x: node.x, y: node.y };
+      }
+
+      function isNodeVisible(node) {
+        return node.partition === null || node.partition === undefined || visiblePartitions.has(Number(node.partition));
+      }
+
+      function isEdgeVisible(edge) {
+        const source = nodeMap.get(keyOf(edge.source));
+        const target = nodeMap.get(keyOf(edge.target));
+        return Boolean(source && target && isNodeVisible(source) && isNodeVisible(target));
+      }
+
+      function visibleNodeCount() {
+        return DATA.nodes.reduce((count, node) => count + (isNodeVisible(node) ? 1 : 0), 0);
+      }
+
+      function currentBounds() {
+        const visibleNodes = DATA.nodes.filter(isNodeVisible);
+        if (!visibleNodes.length) return { minX: 0, maxX: 1, minY: 0, maxY: 1 };
+        const result = visibleNodes.reduce((bounds, node) => {
+          const position = positionFor(node);
+          return {
+            minX: Math.min(bounds.minX, position.x),
+            maxX: Math.max(bounds.maxX, position.x),
+            minY: Math.min(bounds.minY, position.y),
+            maxY: Math.max(bounds.maxY, position.y),
+          };
+        }, { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity });
+
+        if (layoutMode === "partition" && hasPartitionLayout) {
+          for (const group of DATA.partitionLayout.groups) {
+            if (!visiblePartitions.has(Number(group.partition))) continue;
+            result.minX = Math.min(result.minX, group.minX);
+            result.maxX = Math.max(result.maxX, group.maxX);
+            result.minY = Math.min(result.minY, group.minY);
+            result.maxY = Math.max(result.maxY, group.maxY);
+          }
+          const neutral = DATA.partitionLayout.neutralGroup;
+          if (neutral) {
+            result.minX = Math.min(result.minX, neutral.minX);
+            result.maxX = Math.max(result.maxX, neutral.maxX);
+            result.minY = Math.min(result.minY, neutral.minY);
+            result.maxY = Math.max(result.maxY, neutral.maxY);
+          }
+        }
+        return result;
+      }
+
+      function renderPartitionVisibility() {
+        if (!hasPartitionLayout) return;
+        document.getElementById("partition-visibility").innerHTML = DATA.partitionLayout.partitionIds.map(partition => `
+          <label class="check-control">
+            <input type="checkbox" data-partition="${escapeHtml(partition)}" ${visiblePartitions.has(Number(partition)) ? "checked" : ""}>
+            <span class="partition-dot" style="background:${partitionColor(partition)}"></span>P${escapeHtml(partition)}
+          </label>
+        `).join("");
+      }
+
+      function revealNodePartition(node) {
+        if (node.partition === null || node.partition === undefined) return false;
+        const partition = Number(node.partition);
+        if (visiblePartitions.has(partition)) return false;
+        visiblePartitions.add(partition);
+        renderPartitionVisibility();
+        return true;
       }
 
       function nodeColor(node) {
@@ -663,12 +765,19 @@
           focusSet = null;
           return;
         }
+        const selectedNode = nodeMap.get(selectedId);
+        if (!selectedNode || !isNodeVisible(selectedNode)) {
+          focusSet = null;
+          return;
+        }
         focusSet = new Set([selectedId]);
         let frontier = new Set([selectedId]);
         for (let depth = 0; depth < focusDepth; depth += 1) {
           const next = new Set();
           for (const id of frontier) {
             for (const neighbor of adjacency.get(id) || []) {
+              const neighborNode = nodeMap.get(neighbor);
+              if (!neighborNode || !isNodeVisible(neighborNode)) continue;
               if (!focusSet.has(neighbor)) next.add(neighbor);
               focusSet.add(neighbor);
             }
@@ -687,9 +796,8 @@
         return Math.max(base, minimumScreenRadius / view.scale);
       }
 
-      function drawNodeShape(node, radius) {
-        const x = node.x;
-        const y = node.y;
+      function drawNodeShape(node, radius, position = positionFor(node)) {
+        const { x, y } = position;
         ctx.beginPath();
         if (node.type === "and") {
           ctx.rect(x - radius, y - radius, radius * 2, radius * 2);
@@ -714,17 +822,19 @@
       }
 
       function drawArrow(edge, source, target, color, alpha) {
-        const dx = target.x - source.x;
-        const dy = target.y - source.y;
+        const sourcePosition = positionFor(source);
+        const targetPosition = positionFor(target);
+        const dx = targetPosition.x - sourcePosition.x;
+        const dy = targetPosition.y - sourcePosition.y;
         const distance = Math.hypot(dx, dy) || 1;
         const ux = dx / distance;
         const uy = dy / distance;
         const targetRadius = radiusForNode(target) * 1.15;
-        const endX = target.x - ux * targetRadius;
-        const endY = target.y - uy * targetRadius;
+        const endX = targetPosition.x - ux * targetRadius;
+        const endY = targetPosition.y - uy * targetRadius;
 
         ctx.beginPath();
-        ctx.moveTo(source.x, source.y);
+        ctx.moveTo(sourcePosition.x, sourcePosition.y);
         ctx.lineTo(endX, endY);
         ctx.stroke();
 
@@ -754,6 +864,46 @@
         }
       }
 
+      function drawPartitionRegions() {
+        if (layoutMode !== "partition" || !hasPartitionLayout) return;
+        const labelSize = 17 / view.scale;
+        for (const group of DATA.partitionLayout.groups) {
+          if (!visiblePartitions.has(Number(group.partition))) continue;
+          const width = group.maxX - group.minX;
+          const height = group.maxY - group.minY;
+          ctx.globalAlpha = 0.07;
+          ctx.fillStyle = partitionColor(group.partition);
+          ctx.fillRect(group.minX, group.minY, width, height);
+          ctx.globalAlpha = 0.32;
+          ctx.strokeStyle = partitionColor(group.partition);
+          ctx.lineWidth = Math.max(1, 1 / view.scale);
+          ctx.strokeRect(group.minX, group.minY, width, height);
+          ctx.globalAlpha = 0.88;
+          ctx.fillStyle = partitionColor(group.partition);
+          ctx.font = `750 ${labelSize}px ui-sans-serif, system-ui, sans-serif`;
+          ctx.textBaseline = "top";
+          ctx.fillText(`${group.label} · ${group.nodeCount} 节点`, group.minX + 16 / view.scale, group.minY + 14 / view.scale);
+        }
+        const neutral = DATA.partitionLayout.neutralGroup;
+        if (neutral) {
+          const width = neutral.maxX - neutral.minX;
+          const height = neutral.maxY - neutral.minY;
+          ctx.globalAlpha = 0.07;
+          ctx.fillStyle = "#687582";
+          ctx.fillRect(neutral.minX, neutral.minY, width, height);
+          ctx.globalAlpha = 0.25;
+          ctx.strokeStyle = "#687582";
+          ctx.lineWidth = Math.max(1, 1 / view.scale);
+          ctx.strokeRect(neutral.minX, neutral.minY, width, height);
+          ctx.globalAlpha = 0.8;
+          ctx.fillStyle = "#56616c";
+          ctx.font = `700 ${labelSize}px ui-sans-serif, system-ui, sans-serif`;
+          ctx.textBaseline = "top";
+          ctx.fillText(`${neutral.label} · ${neutral.nodeCount} 节点`, neutral.minX + 16 / view.scale, neutral.minY + 14 / view.scale);
+        }
+        ctx.globalAlpha = 1;
+      }
+
       function draw() {
         ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
         ctx.clearRect(0, 0, cssWidth, cssHeight);
@@ -762,12 +912,13 @@
         ctx.save();
         ctx.translate(view.x, view.y);
         ctx.scale(view.scale, view.scale);
+        drawPartitionRegions();
 
         const emphasizeCuts = document.getElementById("emphasize-cuts").checked;
         for (const edge of DATA.edges) {
           const source = edgeEndpoint(edge, "source");
           const target = edgeEndpoint(edge, "target");
-          if (!source || !target) continue;
+          if (!source || !target || !isEdgeVisible(edge)) continue;
           const inFocus = isFocused(source.id) && isFocused(target.id);
           const selectedEdge = selectedId && (keyOf(source.id) === selectedId || keyOf(target.id) === selectedId);
           const isStrongCut = edge.isCut && emphasizeCuts;
@@ -784,13 +935,15 @@
 
         const showLabels = document.getElementById("show-labels").checked;
         for (const node of DATA.nodes) {
-          const screenX = node.x * view.scale + view.x;
-          const screenY = node.y * view.scale + view.y;
+          if (!isNodeVisible(node)) continue;
+          const position = positionFor(node);
+          const screenX = position.x * view.scale + view.x;
+          const screenY = position.y * view.scale + view.y;
           if (screenX < -30 || screenX > cssWidth + 30 || screenY < -30 || screenY > cssHeight + 30) continue;
           const focused = isFocused(node.id);
           const radius = radiusForNode(node);
           ctx.globalAlpha = focused ? 1 : 0.09;
-          drawNodeShape(node, radius);
+          drawNodeShape(node, radius, position);
           ctx.fillStyle = nodeColor(node);
           ctx.fill();
           ctx.strokeStyle = node.isCutVariable ? "#8f2424" : "rgba(23, 33, 43, 0.58)";
@@ -799,7 +952,7 @@
 
           const key = keyOf(node.id);
           if (key === selectedId || key === hoveredId) {
-            drawNodeShape(node, radius + Math.max(3, 3 / view.scale));
+            drawNodeShape(node, radius + Math.max(3, 3 / view.scale), position);
             ctx.strokeStyle = key === selectedId ? "#111820" : "#155e75";
             ctx.lineWidth = Math.max(2.2, 2.2 / view.scale);
             ctx.stroke();
@@ -812,7 +965,7 @@
             ctx.font = `650 ${fontSize}px ui-sans-serif, system-ui, sans-serif`;
             ctx.textBaseline = "middle";
             ctx.fillStyle = "#17212b";
-            ctx.fillText(node.label, node.x + radius + 4 / view.scale, node.y);
+            ctx.fillText(node.label, position.x + radius + 4 / view.scale, position.y);
           }
         }
         ctx.restore();
@@ -836,13 +989,16 @@
 
       function fitGraph() {
         const padding = 54;
+        const bounds = currentBounds();
         const width = Math.max(bounds.maxX - bounds.minX, 1);
         const height = Math.max(bounds.maxY - bounds.minY, 1);
         view.scale = Math.max(0.02, Math.min((cssWidth - padding * 2) / width, (cssHeight - padding * 2) / height, 1.4));
         view.x = cssWidth / 2 - ((bounds.minX + bounds.maxX) / 2) * view.scale;
         view.y = cssHeight / 2 - ((bounds.minY + bounds.maxY) / 2) * view.scale;
         draw();
-        setStatus(`全图 · ${DATA.nodes.length} 个可视节点 · ${DATA.edges.length} 条原始有向边`);
+        const edgeCount = DATA.edges.reduce((count, edge) => count + (isEdgeVisible(edge) ? 1 : 0), 0);
+        const layoutLabel = layoutMode === "partition" ? "分区视图" : "拓扑视图";
+        setStatus(`${layoutLabel} · ${visibleNodeCount()} 个可视节点 · ${edgeCount} 条原始有向边`);
       }
 
       function zoomAt(factor, screenX = cssWidth / 2, screenY = cssHeight / 2) {
@@ -857,22 +1013,24 @@
       }
 
       function centerOnNode(node) {
+        const position = positionFor(node);
         view.scale = Math.max(view.scale, 1.15);
-        view.x = cssWidth / 2 - node.x * view.scale;
-        view.y = cssHeight / 2 - node.y * view.scale;
+        view.x = cssWidth / 2 - position.x * view.scale;
+        view.y = cssHeight / 2 - position.y * view.scale;
       }
 
       function selectNode(id, center = false) {
         const key = keyOf(id);
         const node = nodeMap.get(key);
         if (!node) return false;
+        const revealed = revealNodePartition(node);
         selectedId = key;
         if (center) centerOnNode(node);
         updateFocusSet();
         renderSelectedDetail();
         draw();
         const context = isPartitionMode ? (node.partition === null || node.partition === undefined ? "不参与划分" : `分区 ${node.partition}`) : "原始 AIG";
-        setStatus(`${formatNodeLabel(node)} · ${typeNames[node.type] || node.type} · ${context}${node.isCutVariable ? " · 关键变量" : ""}`);
+        setStatus(`${formatNodeLabel(node)} · ${typeNames[node.type] || node.type} · ${context}${node.isCutVariable ? " · 关键变量" : ""}${revealed ? " · 已显示所在分区" : ""}`);
         return true;
       }
 
@@ -883,8 +1041,10 @@
         let best = null;
         let bestDistance = 12;
         for (const node of DATA.nodes) {
-          const dx = node.x * view.scale + view.x - x;
-          const dy = node.y * view.scale + view.y - y;
+          if (!isNodeVisible(node)) continue;
+          const position = positionFor(node);
+          const dx = position.x * view.scale + view.x - x;
+          const dy = position.y * view.scale + view.y - y;
           const distance = Math.hypot(dx, dy);
           if (distance < bestDistance) {
             bestDistance = distance;
@@ -976,14 +1136,52 @@
       document.getElementById("fit-view").addEventListener("click", fitGraph);
       document.getElementById("reset-view").addEventListener("click", () => {
         selectedId = null;
+        hoveredId = null;
         focusDepth = 0;
         focusSet = null;
+        if (hasPartitionLayout) {
+          visiblePartitions.clear();
+          DATA.partitionLayout.partitionIds.forEach(partition => visiblePartitions.add(Number(partition)));
+          renderPartitionVisibility();
+        }
         document.querySelectorAll("#focus-control button").forEach(button => button.classList.toggle("active", button.dataset.depth === "0"));
         renderSelectedDetail();
         fitGraph();
       });
       document.getElementById("show-labels").addEventListener("change", draw);
       document.getElementById("emphasize-cuts").addEventListener("change", draw);
+
+      document.getElementById("layout-control").addEventListener("click", event => {
+        const button = event.target.closest("button[data-layout]");
+        if (!button || !hasPartitionLayout || button.dataset.layout === layoutMode) return;
+        layoutMode = button.dataset.layout;
+        document.querySelectorAll("#layout-control button").forEach(item => item.classList.toggle("active", item === button));
+        tooltip.hidden = true;
+        fitGraph();
+      });
+
+      document.getElementById("partition-visibility").addEventListener("change", event => {
+        const input = event.target.closest("input[data-partition]");
+        if (!input) return;
+        const partition = Number(input.dataset.partition);
+        if (input.checked) visiblePartitions.add(partition);
+        else visiblePartitions.delete(partition);
+        if (selectedId) {
+          const selectedNode = nodeMap.get(selectedId);
+          if (selectedNode && !isNodeVisible(selectedNode)) {
+            selectedId = null;
+            focusSet = null;
+            renderSelectedDetail();
+          }
+        }
+        if (hoveredId) {
+          const hoveredNode = nodeMap.get(hoveredId);
+          if (hoveredNode && !isNodeVisible(hoveredNode)) hoveredId = null;
+        }
+        tooltip.hidden = true;
+        updateFocusSet();
+        fitGraph();
+      });
 
       document.getElementById("focus-control").addEventListener("click", event => {
         const button = event.target.closest("button[data-depth]");
@@ -1003,13 +1201,22 @@
       renderLegend();
       renderKeyList();
       renderSelectedDetail();
+      renderPartitionVisibility();
       resizeCanvas();
 
       window.__AIG_VISUALIZATION__ = {
         data: DATA,
         fitGraph,
         selectNode,
-        getState: () => ({ selectedId, focusDepth, scale: view.scale, focusCount: focusSet ? focusSet.size : DATA.nodes.length }),
+        getState: () => ({
+          selectedId,
+          focusDepth,
+          scale: view.scale,
+          layoutMode,
+          visiblePartitions: Array.from(visiblePartitions).sort((a, b) => a - b),
+          visibleNodeCount: visibleNodeCount(),
+          focusCount: focusSet ? focusSet.size : visibleNodeCount(),
+        }),
       };
       document.body.dataset.ready = "true";
     })();
